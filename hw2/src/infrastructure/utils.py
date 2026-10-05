@@ -7,6 +7,10 @@ import cv2
 from infrastructure import pytorch_util as ptu
 from typing import Dict, Tuple, List
 
+import torch
+from torch import nn as nn
+from torch.nn import functional as F
+
 ############################################
 ############################################
 
@@ -30,14 +34,16 @@ def sample_trajectory(
             )
 
         # TODO use the most recent ob to decide what to do
-        ac = None
-
         # TODO: take that action and get reward and next ob
-        next_ob, rew, done, info = None, None, None, None
+        ac = policy.get_action(ob)
+        next_ob, rew, done, info = env.step(ac)
 
         # TODO rollout can end due to done, or due to max_length
         steps += 1
-        rollout_done = None
+        if done or steps >= max_length:
+            rollout_done = True
+        else:
+            rollout_done = False
 
         # record result of taking that action
         obs.append(ob)
