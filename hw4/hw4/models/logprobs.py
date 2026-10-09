@@ -43,7 +43,30 @@ def compute_per_token_logprobs(
     #
     # Respect enable_grad: when enable_grad=False this function should not build an
     # autograd graph.
-    raise NotImplementedError("student TODO: compute_per_token_logprobs")
+    assert input_ids.dim() == 2
+    B, L= input_ids.shape
+
+    if not enable_grad:
+        with torch.no_grad():
+            logits = model(input_ids[:, :-1], attention_mask[:, :-1], use_cache=False).logits
+    else:
+        logits = model(input_ids[:, :-1], attention_mask[:, :-1], use_cache=False).logits
+
+    V = logits.shape[2]
+    targets = input_ids[:, 1:]
+    # Navie implememtation
+    # log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    # target_log_probs = torch.gather(log_probs, -1, targets.unsqueeze(-1)).squeeze(-1)
+    
+    # Memory-efficent way
+    logits = logits.view(-1, V)
+    targets = targets.contiguous().view(-1)
+    target_log_probs = -torch.nn.functional.cross_entropy(logits, targets, reduction="none")
+
+    target_log_probs = target_log_probs.view(B, -1)
+
+    assert target_log_probs.shape == (B, L-1), f"target_log_probs.shape is {target_log_probs.shape}, required {(B, L-1)}"
+    return target_log_probs
 
 
 def build_completion_mask(
@@ -66,7 +89,21 @@ def build_completion_mask(
     # prompt_input_len is the (padded) prompt length before completion tokens were
     # appended. You can use attention_mask to exclude padding; pad_token_id is passed
     # for convenience but a direct attention-mask-based solution is fine.
-    raise NotImplementedError("student TODO: build_completion_mask")
+    B, L = input_ids.shape
+    device = input_ids.device
+
+    assert attention_mask.shape == (B, L)
+
+    mask = torch.zeros(size=(B, L-1), dtype=torch.bool, device=device)
+    index = torch.arange(prompt_input_len-1, L-1, device=device)
+    index = torch.stack([index for _ in range(B)], dim=0)
+    mask = torch.scatter(mask, dim=-1, index=index, src=torch.ones(B, L-1, dtype=torch.bool, device=device)) # (B, L-1)
+
+    mask = mask & attention_mask[:, 1:].bool()
+
+    assert mask.shape == (B, L-1)
+
+    return mask.float()
 
 
 def masked_sum(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -110,4 +147,12 @@ def approx_kl_from_logprobs(
     #                             = KL(p_new || p_ref).
     #
     # The clamp to [-20, 20] is for numerical stability / variance control.
-    raise NotImplementedError("student TODO: approx_kl_from_logprobs")
+    B, L_1 = new_logprobs.shape
+    assert ref_logprobs.shape == (B, L_1)
+    assert mask.shape == (B, L_1) 
+
+    delta = torch.clamp(ref_logprobs - new_logprobs, -log_ratio_clip, log_ratio_clip) # (B, L-1)
+    per_token = torch.exp(delta) - delta - 1
+
+    masked_per_token = per_token * mask
+    return masked_per_token.sum() / (mask.sum() + eps)
